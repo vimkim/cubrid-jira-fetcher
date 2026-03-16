@@ -2,10 +2,11 @@
 """
 cubrid-jira-fetcher: Fetch JIRA issue details and related issues from jira.cubrid.org
 Usage:
-    python main.py CBRD-26463
-    python main.py http://jira.cubrid.org/browse/CBRD-26463
-    python main.py CBRD-26463 --depth 2
-    python main.py CBRD-26463 --no-recurse
+    python fetcher.py CBRD-26463
+    python fetcher.py http://jira.cubrid.org/browse/CBRD-26463
+    python fetcher.py CBRD-26463 --depth 2
+    python fetcher.py CBRD-26463 --no-recurse
+    python fetcher.py CBRD-26463 -d my_issues/
 """
 
 import sys
@@ -14,7 +15,7 @@ import json
 import argparse
 import urllib.request
 import urllib.error
-from typing import Optional
+from pathlib import Path
 
 JIRA_BASE = "http://jira.cubrid.org"
 REST_API = f"{JIRA_BASE}/rest/api/2/issue"
@@ -150,28 +151,44 @@ def format_issue(data: dict, indent: int = 0) -> str:
     return "\n".join(lines)
 
 
+def save_issue(data: dict, out_dir: Path, raw_json: bool = False) -> Path:
+    """Write a single issue to out_dir/{KEY}.txt (or .json). Returns the path."""
+    key = data.get("key", "UNKNOWN")
+    ext = ".json" if raw_json else ".txt"
+    path = out_dir / f"{key}{ext}"
+    content = (
+        json.dumps(data, indent=2, ensure_ascii=False)
+        if raw_json
+        else format_issue(data)
+    )
+    path.write_text(content, encoding="utf-8")
+    return path
+
+
 def fetch_recursive(
     key: str,
     max_depth: int,
     visited: set[str],
+    out_dir: Path,
+    raw_json: bool = False,
     current_depth: int = 0,
 ) -> None:
     if key in visited or current_depth > max_depth:
         return
     visited.add(key)
 
-    indent = current_depth
-    print(f"\n{'  ' * indent}Fetching {key} (depth {current_depth})...")
+    print(f"Fetching {key} (depth {current_depth})...", file=sys.stderr)
     data = fetch_issue(key)
     if not data:
         return
 
-    print(format_issue(data, indent=indent))
+    path = save_issue(data, out_dir, raw_json=raw_json)
+    print(f"  Saved -> {path}", file=sys.stderr)
 
     if current_depth < max_depth:
         related = extract_related_keys(data)
         for _rel, rkey in related:
-            fetch_recursive(rkey, max_depth, visited, current_depth + 1)
+            fetch_recursive(rkey, max_depth, visited, out_dir, raw_json, current_depth + 1)
 
 
 def main():
@@ -181,6 +198,12 @@ def main():
     parser.add_argument(
         "issue",
         help="Issue key (e.g. CBRD-26463) or full browse URL",
+    )
+    parser.add_argument(
+        "-d", "--output-dir",
+        default="related_issues",
+        metavar="DIR",
+        help="Directory to save issue files (default: related_issues/)",
     )
     parser.add_argument(
         "--depth",
@@ -198,7 +221,7 @@ def main():
         "--json",
         action="store_true",
         dest="raw_json",
-        help="Dump raw JSON instead of formatted output",
+        help="Save raw JSON instead of formatted text",
     )
     args = parser.parse_args()
 
@@ -208,16 +231,14 @@ def main():
         print(f"Error: {e}", file=sys.stderr)
         sys.exit(1)
 
+    out_dir = Path(args.output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
     max_depth = 0 if args.no_recurse else args.depth
 
-    if args.raw_json:
-        data = fetch_issue(key)
-        print(json.dumps(data, indent=2, ensure_ascii=False))
-        return
-
     visited: set[str] = set()
-    fetch_recursive(key, max_depth, visited, current_depth=0)
-    print(f"\nDone. Fetched {len(visited)} issue(s): {', '.join(sorted(visited))}")
+    fetch_recursive(key, max_depth, visited, out_dir, raw_json=args.raw_json)
+    print(f"\nDone. {len(visited)} issue(s) saved to {out_dir}/: {', '.join(sorted(visited))}")
 
 
 if __name__ == "__main__":
