@@ -18,8 +18,8 @@ fetch-single issue:
     uv run fetcher.py {{issue}} -d {{dir}} --no-recurse
 
 # Fetch an issue with custom recursion depth
-# Usage: just fetch-deep CBRD-26463 3
-fetch-deep issue depth="5":
+# Usage: just fetch-deep CBRD-26463 999999
+fetch-deep issue depth="3":
     uv run fetcher.py {{issue}} -d {{dir}} --depth {{depth}}
 
 # Force re-download (overwrite existing files)
