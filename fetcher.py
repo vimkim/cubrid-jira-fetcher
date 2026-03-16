@@ -13,6 +13,7 @@ import sys
 import re
 import json
 import argparse
+import subprocess
 import urllib.request
 import urllib.error
 from pathlib import Path
@@ -70,96 +71,115 @@ def extract_related_keys(data: dict) -> list[tuple[str, str]]:
     return related
 
 
-def format_issue(data: dict, indent: int = 0) -> str:
-    """Format an issue dict into a readable string."""
+def jira_to_markdown(text: str) -> str:
+    """Convert Jira wiki markup to markdown via pandoc. Falls back to plain text."""
+    try:
+        result = subprocess.run(
+            ["pandoc", "-f", "jira", "-t", "markdown", "--wrap=none"],
+            input=text,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return text
+
+
+def format_issue_markdown(data: dict) -> str:
+    """Format an issue dict as markdown."""
     if not data:
         return "(no data)"
 
     key = data.get("key", "?")
     fields = data.get("fields", {})
-    pad = "  " * indent
 
     lines = []
-    lines.append(f"{pad}{'='*60}")
-    lines.append(f"{pad}Issue : {key}  —  {JIRA_BASE}/browse/{key}")
-    lines.append(f"{pad}{'='*60}")
-
     summary = fields.get("summary", "(no summary)")
-    lines.append(f"{pad}Summary    : {summary}")
+    lines.append(f"# [{key}] {summary}")
+    lines.append(f"\n<{JIRA_BASE}/browse/{key}>")
+
+    lines.append("\n## Metadata\n")
+    lines.append(f"| Field | Value |")
+    lines.append(f"|---|---|")
 
     status = fields.get("status", {}).get("name", "?")
-    lines.append(f"{pad}Status     : {status}")
+    lines.append(f"| Status | {status} |")
 
     priority = fields.get("priority", {}).get("name", "?")
-    lines.append(f"{pad}Priority   : {priority}")
+    lines.append(f"| Priority | {priority} |")
 
     issue_type = fields.get("issuetype", {}).get("name", "?")
-    lines.append(f"{pad}Type       : {issue_type}")
+    lines.append(f"| Type | {issue_type} |")
 
-    assignee = fields.get("assignee") or {}
-    lines.append(f"{pad}Assignee   : {assignee.get('displayName', 'Unassigned')}")
+    assignee = (fields.get("assignee") or {}).get("displayName", "Unassigned")
+    lines.append(f"| Assignee | {assignee} |")
 
-    reporter = fields.get("reporter") or {}
-    lines.append(f"{pad}Reporter   : {reporter.get('displayName', '?')}")
+    reporter = (fields.get("reporter") or {}).get("displayName", "?")
+    lines.append(f"| Reporter | {reporter} |")
 
-    resolution = fields.get("resolution") or {}
-    lines.append(f"{pad}Resolution : {resolution.get('name', 'Unresolved')}")
+    resolution = (fields.get("resolution") or {}).get("name", "Unresolved")
+    lines.append(f"| Resolution | {resolution} |")
 
     components = [c["name"] for c in fields.get("components", [])]
     if components:
-        lines.append(f"{pad}Components : {', '.join(components)}")
+        lines.append(f"| Components | {', '.join(components)} |")
 
     fix_versions = [v["name"] for v in fields.get("fixVersions", [])]
     if fix_versions:
-        lines.append(f"{pad}Fix Version: {', '.join(fix_versions)}")
+        lines.append(f"| Fix Version | {', '.join(fix_versions)} |")
 
     target_versions = [v["name"] for v in fields.get("customfield_210441", []) or []]
     if target_versions:
-        lines.append(f"{pad}Target Ver : {', '.join(target_versions)}")
+        lines.append(f"| Target Version | {', '.join(target_versions)} |")
 
     created = (fields.get("created") or "")[:10]
     updated = (fields.get("updated") or "")[:10]
-    lines.append(f"{pad}Created    : {created}  |  Updated: {updated}")
+    lines.append(f"| Created | {created} |")
+    lines.append(f"| Updated | {updated} |")
 
     # Description
     desc = fields.get("description") or ""
     if desc:
-        lines.append(f"{pad}Description:")
-        for line in desc.splitlines():
-            lines.append(f"{pad}  {line}")
+        lines.append("\n## Description\n")
+        lines.append(jira_to_markdown(desc))
 
     # Comments
     comments = fields.get("comment", {}).get("comments", [])
     if comments:
-        lines.append(f"{pad}Comments   : ({len(comments)} total)")
-        for c in comments[:5]:  # show up to 5
+        lines.append(f"\n## Comments ({len(comments)} total)\n")
+        for c in comments:
             author = (c.get("author") or {}).get("displayName", "?")
             date = (c.get("created") or "")[:10]
-            body = (c.get("body") or "").replace("\r\n", " ").replace("\n", " ")[:200]
-            lines.append(f"{pad}  [{date}] {author}: {body}")
-        if len(comments) > 5:
-            lines.append(f"{pad}  ... and {len(comments)-5} more comment(s)")
+            body = jira_to_markdown(c.get("body") or "")
+            lines.append(f"### {author} — {date}\n")
+            lines.append(body)
+            lines.append("")
 
     # Related issues
     related = extract_related_keys(data)
     if related:
-        lines.append(f"{pad}Related Issues:")
+        lines.append("\n## Related Issues\n")
         for rel, rkey in related:
             rlink = f"{JIRA_BASE}/browse/{rkey}"
-            lines.append(f"{pad}  [{rel}] {rkey}  {rlink}")
+            lines.append(f"- **{rel}**: [{rkey}]({rlink})")
 
     return "\n".join(lines)
 
 
+def issue_path(key: str, out_dir: Path, raw_json: bool) -> Path:
+    ext = ".json" if raw_json else ".md"
+    return out_dir / f"{key}{ext}"
+
+
 def save_issue(data: dict, out_dir: Path, raw_json: bool = False) -> Path:
-    """Write a single issue to out_dir/{KEY}.txt (or .json). Returns the path."""
+    """Write a single issue to out_dir/{KEY}.md (or .json). Returns the path."""
     key = data.get("key", "UNKNOWN")
-    ext = ".json" if raw_json else ".txt"
-    path = out_dir / f"{key}{ext}"
+    path = issue_path(key, out_dir, raw_json)
     content = (
         json.dumps(data, indent=2, ensure_ascii=False)
         if raw_json
-        else format_issue(data)
+        else format_issue_markdown(data)
     )
     path.write_text(content, encoding="utf-8")
     return path
@@ -171,24 +191,39 @@ def fetch_recursive(
     visited: set[str],
     out_dir: Path,
     raw_json: bool = False,
+    force: bool = False,
     current_depth: int = 0,
 ) -> None:
     if key in visited or current_depth > max_depth:
         return
     visited.add(key)
 
+    path = issue_path(key, out_dir, raw_json)
+    already_exists = path.exists()
+
+    if not force and already_exists:
+        print(f"Skipping {key} (already exists: {path})", file=sys.stderr)
+        # Still need related keys to recurse — fetch without writing
+        if current_depth < max_depth:
+            data = fetch_issue(key)
+            if data:
+                related = extract_related_keys(data)
+                for _rel, rkey in related:
+                    fetch_recursive(rkey, max_depth, visited, out_dir, raw_json, force, current_depth + 1)
+        return
+
     print(f"Fetching {key} (depth {current_depth})...", file=sys.stderr)
     data = fetch_issue(key)
     if not data:
         return
 
-    path = save_issue(data, out_dir, raw_json=raw_json)
+    save_issue(data, out_dir, raw_json=raw_json)
     print(f"  Saved -> {path}", file=sys.stderr)
 
     if current_depth < max_depth:
         related = extract_related_keys(data)
         for _rel, rkey in related:
-            fetch_recursive(rkey, max_depth, visited, out_dir, raw_json, current_depth + 1)
+            fetch_recursive(rkey, max_depth, visited, out_dir, raw_json, force, current_depth + 1)
 
 
 def main():
@@ -221,7 +256,12 @@ def main():
         "--json",
         action="store_true",
         dest="raw_json",
-        help="Save raw JSON instead of formatted text",
+        help="Save raw JSON instead of markdown",
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-download and overwrite already-saved issues",
     )
     args = parser.parse_args()
 
@@ -237,8 +277,8 @@ def main():
     max_depth = 0 if args.no_recurse else args.depth
 
     visited: set[str] = set()
-    fetch_recursive(key, max_depth, visited, out_dir, raw_json=args.raw_json)
-    print(f"\nDone. {len(visited)} issue(s) saved to {out_dir}/: {', '.join(sorted(visited))}")
+    fetch_recursive(key, max_depth, visited, out_dir, raw_json=args.raw_json, force=args.force)
+    print(f"\nDone. {len(visited)} issue(s) in {out_dir}/: {', '.join(sorted(visited))}")
 
 
 if __name__ == "__main__":

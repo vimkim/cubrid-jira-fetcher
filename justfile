@@ -22,6 +22,11 @@ fetch-single issue:
 fetch-deep issue depth="5":
     uv run fetcher.py {{issue}} -d {{dir}} --depth {{depth}}
 
+# Force re-download (overwrite existing files)
+# Usage: just force CBRD-26463
+force issue:
+    uv run fetcher.py {{issue}} -d {{dir}} --force
+
 # Dump raw JSON for an issue
 # Usage: just json CBRD-26463
 json issue:
