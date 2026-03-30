@@ -6,5 +6,9 @@ readme = "README.md"
 requires-python = ">=3.14"
 dependencies = []
 
+[tool.setuptools.packages.find]
+include = ["cubrid_jira_fetcher*"]
+
 [project.scripts]
-jira-fetch = "fetcher:main"
+jira-fetch = "cubrid_jira_fetcher.fetcher:main"
+cubrid-jira-search = "cubrid_jira_fetcher.search:main"
