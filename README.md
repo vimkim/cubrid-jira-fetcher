@@ -1,62 +1,144 @@
 # cubrid-jira-fetcher
 
-Fetch CUBRID JIRA issues and their related issues, saving each as a markdown file.
+Fetch CUBRID JIRA issues as markdown, with a cache-first lookup designed for AI agents and slash commands.
 
-Uses the JIRA REST API over plain HTTP — bypassing the redirect loop that occurs when tools force-upgrade to HTTPS.
+This package provides two command-line tools:
+
+| Command | What it does |
+|---|---|
+| `cubrid-jira-search` | Look up **one** issue. Prints markdown to stdout. Uses a local cache; fetches from JIRA only on cache miss. **Use this from agents.** |
+| `cubrid-jira-fetch` | Bulk-fetch an issue **and its related issues** into a directory of markdown files. |
+
+Uses the JIRA REST API over plain HTTP, bypassing the redirect loop that occurs when tools force-upgrade to HTTPS.
 
 ![Demo](./demo.gif)
 
-## Requirements
+---
 
-- Python 3.14+
-- [pandoc](https://pandoc.org/) (for Jira wiki → markdown conversion)
-- [uv](https://github.com/astral-sh/uv) (optional, for `just` recipes)
-- [just](https://github.com/casey/just) (optional)
+## Quick install (for AI agents)
+
+**Use `uv tool install` — it is the right tool for this job.**
+
+`uv tool install` installs each CLI into its own isolated environment and puts the binaries on `$PATH`, the same way `pipx` does but much faster. This is strictly better than `pip install -e .` or `pip install --user` for end users:
+
+- ✅ No shared site-packages: the tool's deps can't break your other Python projects (and vice-versa).
+- ✅ No editable / dev checkout required — `uv tool install` works straight from Git or PyPI.
+- ✅ Self-healing `$PATH`: `uv tool update-shell` wires up the shim directory once.
+- ✅ Easy uninstall: `uv tool uninstall cubrid-jira-fetcher`.
+- ❌ `pip install -e .` is for **local development** only — it pollutes whatever Python environment happens to be active and its entry points silently break when that venv is deleted.
+
+**One-liner** — pick whichever your environment has:
+
+```sh
+# With uv (recommended):
+uv tool install git+https://github.com/<owner>/<repo>.git
+
+# With pipx (equivalent behavior, slower):
+pipx install git+https://github.com/<owner>/<repo>.git
+
+# From a local clone:
+cd cubrid-jira-fetcher && uv tool install . || pipx install .
+```
+
+After install, **both binaries are on `$PATH`**:
+
+```sh
+cubrid-jira-search --help
+cubrid-jira-fetch --help
+```
+
+> Last-resort fallback (not recommended — no isolation):
+> `pip install --user git+https://github.com/<owner>/<repo>.git`
+>
+> Do **not** use `pip install -e .` for installation; that mode is only appropriate when actively editing this repo's source.
+
+---
+
+## Prerequisites
+
+- **Python 3.14+**
+- **[pandoc](https://pandoc.org/)** — used to convert Jira wiki markup to markdown
 
 Install pandoc:
 ```sh
-brew install pandoc   # macOS / Linuxbrew
-# or
-sudo apt install pandoc
+brew install pandoc          # macOS / Linuxbrew
+sudo apt install pandoc      # Debian / Ubuntu
+sudo dnf install pandoc      # Fedora / RHEL
 ```
 
-## Usage
+Optional dev tools:
+- [uv](https://github.com/astral-sh/uv) — faster installs, used by the `justfile`
+- [just](https://github.com/casey/just) — recipe runner
 
-### Direct
+---
+
+## Using `cubrid-jira-search` (the agent-friendly one)
+
+Prints the issue's markdown to **stdout**. Progress messages go to stderr so piping stays clean.
 
 ```sh
-python fetcher.py CBRD-26463
-python fetcher.py http://jira.cubrid.org/browse/CBRD-26463
+cubrid-jira-search CBRD-26463
+cubrid-jira-search http://jira.cubrid.org/browse/CBRD-26463
+cubrid-jira-search CBRD-26463 --force         # bypass cache, re-fetch
+cubrid-jira-search CBRD-26463 --no-recurse    # don't walk related issues on a miss
+cubrid-jira-search CBRD-26463 --dir /tmp/jira # override cache directory
 ```
 
-### With just
+**What it does:**
+
+1. Looks for `CBRD-26463*.md` in the cache directory.
+2. **Cache hit** → prints it. No network.
+3. **Cache miss** → fetches the issue (+ 1 level of related issues by default) into the cache, then prints it.
+4. Exits non-zero if the fetch fails — callers can detect failure reliably.
+
+### Cache directory
+
+Resolved in this order (first match wins):
+
+1. `--dir DIR` flag
+2. `$CUBRID_JIRA_DIR` environment variable
+3. `~/.local/share/cubrid-jira/issues/` (default)
+
+**Recommended setup** — share the cache across all your tools and agents:
 
 ```sh
-just fetch CBRD-26463            # fetch issue + 1 level of related issues
-just fetch-single CBRD-26463     # fetch only the given issue
-just fetch-deep CBRD-26463 3     # fetch 3 levels deep
-just force CBRD-26463            # re-download and overwrite existing files
-just json CBRD-26463             # save raw JSON instead of markdown
+echo 'export CUBRID_JIRA_DIR="$HOME/.local/share/cubrid-jira/issues"' >> ~/.bashrc
 ```
 
-Override the output directory:
+### Piping into an agent
+
 ```sh
-just dir=my_issues fetch CBRD-26463
+cubrid-jira-search CBRD-26463 2>/dev/null | your-agent --stdin
 ```
 
-## Options
+The Claude Code `/jira` skill calls `cubrid-jira-search` directly — no extra configuration beyond having the binary on `$PATH`.
+
+### Options
 
 | Flag | Default | Description |
 |---|---|---|
-| `-d`, `--output-dir` | `related_issues/` | Directory to save files into |
-| `--depth N` | `1` | Levels of related issues to follow |
-| `--no-recurse` | — | Only fetch the given issue (same as `--depth 0`) |
-| `--force` | — | Re-download and overwrite already-saved files |
-| `--json` | — | Save raw JSON instead of markdown |
+| `-d`, `--dir DIR` | `$CUBRID_JIRA_DIR` or `~/.local/share/cubrid-jira/issues/` | Cache directory |
+| `--no-recurse` | — | On cache miss, only fetch the requested issue (skip related) |
+| `--force` | — | Ignore the cache and re-fetch from JIRA |
 
-## Output
+---
 
-Each issue is saved as `{output-dir}/{KEY}.md` (or `.json` with `--json`).
+## Using `cubrid-jira-fetch` (bulk fetch)
+
+Saves an issue and its related issues as markdown files in a directory.
+
+```sh
+cubrid-jira-fetch CBRD-26463
+cubrid-jira-fetch http://jira.cubrid.org/browse/CBRD-26463
+cubrid-jira-fetch CBRD-26463 --depth 3      # walk 3 levels of related issues
+cubrid-jira-fetch CBRD-26463 --force        # re-download everything
+cubrid-jira-fetch CBRD-26463 --json         # raw JSON instead of markdown
+cubrid-jira-fetch CBRD-26463 -d my_issues   # custom output dir
+```
+
+### Output
+
+Each issue becomes `{output-dir}/{KEY}.md` (or `.json` with `--json`):
 
 ```
 related_issues/
@@ -66,14 +148,53 @@ related_issues/
 └── CBRD-26521.md   ← related
 ```
 
-Each markdown file contains:
+Each markdown file contains: title and link, a metadata table (status, priority, type, assignee, reporter, resolution, components, versions, dates), the description and comments (converted via pandoc), and a list of related issues.
 
-- Title and link
-- Metadata table (status, priority, type, assignee, reporter, resolution, components, versions, dates)
-- Description (converted from Jira wiki markup via pandoc)
-- Comments (converted from Jira wiki markup via pandoc)
-- Related issues with links
+### Options
 
-## Caching
+| Flag | Default | Description |
+|---|---|---|
+| `-d`, `--output-dir` | `related_issues/` | Directory to save files into |
+| `--depth N` | `1` | Levels of related issues to follow |
+| `--no-recurse` | — | Only fetch the given issue (same as `--depth 0`) |
+| `--force` | — | Re-download and overwrite already-saved files |
+| `--json` | — | Save raw JSON instead of markdown |
 
-Already-saved files are skipped on subsequent runs. Related issues are still traversed so that deeper runs (`--depth 2` after a `--depth 1` run) work correctly. Use `--force` to re-download everything.
+---
+
+## Caching behavior
+
+Both tools share the same on-disk cache. Already-saved files are skipped on subsequent runs; related issues are still traversed so a later `--depth 2` run correctly extends a prior `--depth 1` run. Use `--force` to re-download.
+
+A markdown file written by `cubrid-jira-fetch` is served immediately by `cubrid-jira-search` (and vice-versa) when both point at the same directory.
+
+---
+
+## Development
+
+```sh
+git clone https://github.com/<owner>/<repo>.git
+cd cubrid-jira-fetcher
+uv sync              # creates .venv and installs entry points
+uv run cubrid-jira-search CBRD-26463
+```
+
+Or with `just`:
+
+```sh
+just install         # uv sync
+just search CBRD-26463
+just fetch CBRD-26463
+just fetch-deep CBRD-26463 3
+just force CBRD-26463
+just json CBRD-26463
+```
+
+---
+
+## Troubleshooting
+
+- **`command not found: cubrid-jira-search`** — the install dir isn't on `$PATH`. With `uv tool install`, run `uv tool update-shell`. With `pipx`, run `pipx ensurepath`. Then restart the shell.
+- **`pandoc: command not found`** — install pandoc (see Prerequisites).
+- **Redirect loop / HTTPS errors** — JIRA responses are expected over plain HTTP; do not force HTTPS at the proxy level.
+- **Stale cache** — `cubrid-jira-search CBRD-XXXXX --force` to re-fetch a single issue; delete the cache directory to reset everything.

@@ -1,14 +1,18 @@
 [project]
 name = "cubrid-jira-fetcher"
 version = "0.1.0"
-description = "Add your description here"
+description = "Fetch CUBRID JIRA issues (and their related issues) into markdown or JSON, with a cache-first lookup for AI agents."
 readme = "README.md"
 requires-python = ">=3.14"
 dependencies = []
 
-[tool.setuptools.packages.find]
-include = ["cubrid_jira_fetcher*"]
-
 [project.scripts]
-jira-fetch = "cubrid_jira_fetcher.fetcher:main"
+cubrid-jira-fetch = "cubrid_jira_fetcher.fetcher:main"
 cubrid-jira-search = "cubrid_jira_fetcher.search:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/cubrid_jira_fetcher"]
